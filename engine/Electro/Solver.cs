@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Numerics;
 
 namespace Electro;
@@ -11,7 +12,7 @@ public static class Solver
     // This is intended as a qualitative sandbox, not a full 3D electrostatic solver.
     // solves -laplacian(phi) = rho/eps on a regular grid with neumann boundary dphi/dn=0 (copy edge neighbor)
     // point charges are deposited as gaussian blobs to avoid singularities
-    public static SolveResult Solve(SceneDto scene, GridSpecDto grid, SolverSpecDto solver)
+    public static SolveResult Solve(SceneDto scene, GridSpecDto grid, SolverSpecDto solver, List<float>? residualLog = null)
     {
         var nx = Math.Clamp(grid.Nx, 32, 2048);
         var ny = Math.Clamp(grid.Ny, 32, 2048);
@@ -80,6 +81,7 @@ public static class Solver
             if (it % 10 == 0 || it == maxIters - 1)
             {
                 residual = ComputeResidualL2(phi, rho, eps, nx, ny, invDx2, invDy2);
+                residualLog?.Add(residual);
                 if (residual < tol) break;
             }
         }
