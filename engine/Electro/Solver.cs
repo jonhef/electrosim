@@ -4,6 +4,11 @@ namespace Electro;
 
 public static class Solver
 {
+    // NOTE: This solves a 2D Poisson problem on a rectangle with homogeneous Neumann boundaries.
+    // - Physics: result matches infinitely long line charges (per unit length in z), not a slice of a 3D point-charge field.
+    // - Boundary: dphi/dn = 0 via edge copies (isolated box, no open/free-space boundary).
+    // - Charges: each "point" is deposited as a truncated Gaussian blob so rho integrates to q and avoids singularities.
+    // This is intended as a qualitative sandbox, not a full 3D electrostatic solver.
     // solves -laplacian(phi) = rho/eps on a regular grid with neumann boundary dphi/dn=0 (copy edge neighbor)
     // point charges are deposited as gaussian blobs to avoid singularities
     public static SolveResult Solve(SceneDto scene, GridSpecDto grid, SolverSpecDto solver)
