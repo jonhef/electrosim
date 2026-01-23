@@ -1,0 +1,18 @@
+services:
+  engine:
+    build:
+      context: ./engine
+    environment:
+      ASPNETCORE_URLS: "http://0.0.0.0:5000"
+    ports:
+      - "${ENGINE_PORT:-5000}:5000"
+
+  ui:
+    build:
+      context: ./ui
+      args:
+        VITE_ENGINE_URL: "${ENGINE_URL:-http://engine:5000}"
+    depends_on:
+      - engine
+    ports:
+      - "${UI_PORT:-8080}:80"

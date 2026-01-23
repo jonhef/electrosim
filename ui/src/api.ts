@@ -1,6 +1,6 @@
 import type { Scene, GridSpec, SolverSpec, SolveMeta } from "./types"
 
-const ENGINE = "http://localhost:5000"
+const ENGINE = import.meta.env.VITE_ENGINE_URL ?? "http://localhost:5000"
 
 export async function solve(scene: Scene, grid: GridSpec, solver: SolverSpec): Promise<SolveMeta> {
   const res = await fetch(`${ENGINE}/solve`, {

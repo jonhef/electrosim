@@ -16,3 +16,27 @@ This engine/UI pair solves a **2D Poisson equation** on a rectangular domain and
 - The solution corresponds to infinitely long line charges extruded out of the plane (per unit length in z), **not** a slice of a 3D point-charge field.
 - Fields fall off differently than in 3D (logarithmic vs. 1/r), and the Neumann box boundaries reflect the domain rather than modeling open space.
 - Use this as a qualitative sandbox for 2D potentials; a true 3D electrostatic solution would require a different model (3D Poisson with open boundaries or conductors).
+
+## Run with Docker (full stack)
+Prereq: Docker + docker-compose.
+
+1) Copy `.env.example` to `.env` and adjust if needed:
+```
+ENGINE_PORT=5000      # host port for the engine (container listens on 5000)
+UI_PORT=8080          # host port for the UI (container listens on 80)
+ENGINE_URL=http://engine:5000  # build-time URL the UI uses to reach the engine inside the compose network
+```
+2) Build and start both services:
+```
+docker compose up --build
+```
+This brings up:
+- `engine` (.NET API) on the internal network at `engine:5000` (host port `${ENGINE_PORT}` for debugging).
+- `ui` (React built once, served by nginx) exposed at `http://localhost:${UI_PORT}`.
+
+3) Stop and clean up containers:
+```
+docker compose down
+```
+
+Rebuild UI/engine images after code changes with `docker compose build` (or `docker compose up --build`). No local Node.js or .NET install is required. The UI talks to the engine via `ENGINE_URL`; override it in `.env` if you change the engine port or run the API elsewhere.
