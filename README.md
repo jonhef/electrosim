@@ -24,14 +24,14 @@ Prereq: Docker + docker-compose.
 ```
 ENGINE_PORT=5000      # host port for the engine (container listens on 5000)
 UI_PORT=8080          # host port for the UI (container listens on 80)
-ENGINE_URL=http://engine:5000  # build-time URL the UI uses to reach the engine inside the compose network
+ENGINE_URL=http://localhost:5000  # build-time URL embedded into the UI; must be reachable from your browser
 ```
 2) Build and start both services:
 ```
 docker compose up --build
 ```
 This brings up:
-- `engine` (.NET API) on the internal network at `engine:5000` (host port `${ENGINE_PORT}` for debugging).
+- `engine` (.NET API) in Docker (published to host port `${ENGINE_PORT}`).
 - `ui` (React built once, served by nginx) exposed at `http://localhost:${UI_PORT}`.
 
 3) Stop and clean up containers:
@@ -39,4 +39,4 @@ This brings up:
 docker compose down
 ```
 
-Rebuild UI/engine images after code changes with `docker compose build` (or `docker compose up --build`). No local Node.js or .NET install is required. The UI talks to the engine via `ENGINE_URL`; override it in `.env` if you change the engine port or run the API elsewhere.
+Rebuild UI/engine images after code changes with `docker compose build` (or `docker compose up --build`). No local Node.js or .NET install is required. The UI talks to the engine via `ENGINE_URL` (from the browser perspective), so set it to a browser-reachable address if you change ports or host.

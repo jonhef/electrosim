@@ -11,7 +11,7 @@ services:
     build:
       context: ./ui
       args:
-        VITE_ENGINE_URL: "${ENGINE_URL:-http://engine:5000}"
+        VITE_ENGINE_URL: "${ENGINE_URL:-http://localhost:5000}"
     depends_on:
       - engine
     ports:
