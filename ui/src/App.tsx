@@ -1,7 +1,7 @@
-import React, { useEffect, useRef, useState } from "react"
+import React, { useCallback, useEffect, useRef, useState } from "react"
 import type { PointCharge, Scene, SolveMeta, PhiField, Probe } from "./types"
 import { solve, fetchPhi } from "./api"
-import { renderFieldToCanvas } from "./render"
+import { renderFieldToCanvas, type ScaleMode } from "./render"
 
 const defaultScene: Scene = {
   domain: { xMin: -1, xMax: 1, yMin: -1, yMax: 1, epsilon: 1 },
@@ -34,6 +34,43 @@ export default function App() {
   const [showField, setShowField] = useState(true)
   const [fieldStride, setFieldStride] = useState(12)
   const [equipCount, setEquipCount] = useState(8)
+  const [scaleMode, setScaleMode] = useState<ScaleMode>("symmetric")
+  const [clipPercentile, setClipPercentile] = useState(1)
+  const [showLegend, setShowLegend] = useState(true)
+  const [showShading, setShowShading] = useState(false)
+  const [shadingStrength, setShadingStrength] = useState(0.35)
+
+  const renderCurrent = useCallback((nextField?: PhiField | null) => {
+    const c = canvasRef.current
+    const field = nextField ?? phiField
+    if (!c || !field) return
+    renderFieldToCanvas(c, field, {
+      showField,
+      fieldStride,
+      showEquip: equipCount > 0,
+      equipCount: Math.max(0, equipCount),
+      scaleMode,
+      clipPercentile,
+      showLegend,
+      units: "arb.",
+      showShading,
+      shadingStrength,
+      probe,
+      charges: scene.charges
+    })
+  }, [
+    phiField,
+    showField,
+    fieldStride,
+    equipCount,
+    scaleMode,
+    clipPercentile,
+    showLegend,
+    showShading,
+    shadingStrength,
+    probe,
+    scene.charges
+  ])
 
   useEffect(() => {
     const c = canvasRef.current
@@ -48,11 +85,11 @@ export default function App() {
     resize()
     window.addEventListener("resize", resize)
     return () => window.removeEventListener("resize", resize)
-  }, [])
+  }, [renderCurrent])
 
   useEffect(() => {
     renderCurrent()
-  }, [phiField, showField, fieldStride, equipCount, probe, scene.charges])
+  }, [renderCurrent])
 
   async function runSolve() {
     try {
@@ -75,20 +112,6 @@ export default function App() {
     } catch (e: any) {
       setStatus(`error: ${e?.message ?? String(e)}`)
     }
-  }
-
-  function renderCurrent(nextField?: PhiField | null) {
-    const c = canvasRef.current
-    const field = nextField ?? phiField
-    if (!c || !field) return
-    renderFieldToCanvas(c, field, {
-      showField,
-      fieldStride,
-      showEquip: equipCount > 0,
-      equipCount: Math.max(0, equipCount),
-      probe,
-      charges: scene.charges
-    })
   }
 
   function canvasToWorld(ev: React.MouseEvent, domain: CanvasDomain) {
@@ -318,6 +341,56 @@ export default function App() {
             equipotential lines
             <input type="number" value={equipCount} min={0} max={24} onChange={e => setEquipCount(Number(e.target.value))} style={{ width: "100%" }} />
           </label>
+        </div>
+
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ fontWeight: 600, marginBottom: 6 }}>rendering</div>
+          <label style={{ display: "block", fontSize: 12 }}>
+            scale mode
+            <select
+              value={scaleMode}
+              onChange={e => setScaleMode(e.target.value as ScaleMode)}
+              style={{ width: "100%" }}
+            >
+              <option value="linear">linear</option>
+              <option value="symmetric">symmetric around zero</option>
+              <option value="log">log magnitude</option>
+            </select>
+          </label>
+          <label style={{ display: "block", fontSize: 12, marginTop: 6 }}>
+            percentile clip (% each tail)
+            <input
+              type="number"
+              value={clipPercentile}
+              min={0}
+              max={20}
+              step={0.5}
+              onChange={e => setClipPercentile(Number(e.target.value))}
+              style={{ width: "100%" }}
+            />
+          </label>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, marginTop: 6 }}>
+            <input type="checkbox" checked={showLegend} onChange={e => setShowLegend(e.target.checked)} />
+            show legend and numeric scale
+          </label>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, marginTop: 6 }}>
+            <input type="checkbox" checked={showShading} onChange={e => setShowShading(e.target.checked)} />
+            gradient lighting (visual only)
+          </label>
+          <label style={{ display: "block", fontSize: 12, marginTop: 6 }}>
+            shading strength
+            <input
+              type="range"
+              value={shadingStrength}
+              min={0}
+              max={1}
+              step={0.05}
+              onChange={e => setShadingStrength(Number(e.target.value))}
+              disabled={!showShading}
+              style={{ width: "100%" }}
+            />
+          </label>
+          <div style={{ marginTop: 6, fontSize: 12, color: "#555" }}>upscaling: bilinear interpolation</div>
         </div>
 
         <div style={{ padding: 10, border: "1px solid #ddd", borderRadius: 8 }}>
