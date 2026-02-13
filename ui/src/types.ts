@@ -1,8 +1,25 @@
 export type PointCharge = { x: number; y: number; q: number }
+export type RectConductor = {
+  kind: "rectangle"
+  potential: number
+  xMin: number
+  xMax: number
+  yMin: number
+  yMax: number
+}
+export type CircleConductor = {
+  kind: "circle"
+  potential: number
+  x: number
+  y: number
+  radius: number
+}
+export type Conductor = RectConductor | CircleConductor
 
 export type Scene = {
   domain: { xMin: number; xMax: number; yMin: number; yMax: number; epsilon: number }
   charges: PointCharge[]
+  conductors: Conductor[]
 }
 
 export type SolveMeta = {

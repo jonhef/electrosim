@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react"
-import type { PointCharge, Scene, SolveMeta, PhiField, Probe } from "./types"
+import type { Conductor, PointCharge, Scene, SolveMeta, PhiField, Probe } from "./types"
 import { solve, fetchPhi } from "./api"
 import {
   getDomainViewport,
@@ -15,14 +15,18 @@ const defaultScene: Scene = {
   charges: [
     { x: -0.35, y: 0.0, q: +1.0 },
     { x: +0.35, y: 0.0, q: -1.0 }
-  ]
+  ],
+  conductors: []
 }
 
 type ViewState = { centerX: number; centerY: number; zoom: number }
-type DragMode = "none" | "pan" | "charge"
+type DragMode = "none" | "pan" | "charge" | "conductorMove" | "conductorResize"
+type ResizeHandle = "rect-sw" | "rect-se" | "rect-nw" | "rect-ne" | "circle-radius"
 type DragState = {
   mode: DragMode
   chargeIndex: number
+  conductorIndex: number
+  resizeHandle: ResizeHandle | null
   lastClientX: number
   lastClientY: number
   moved: boolean
@@ -30,6 +34,7 @@ type DragState = {
 
 const MAX_ZOOM = 250
 const CHARGE_HIT_RADIUS_CSS_PX = 14
+const CONDUCTOR_HANDLE_HIT_RADIUS_CSS_PX = 12
 
 function clamp(x: number, lo: number, hi: number) {
   return x < lo ? lo : x > hi ? hi : x
@@ -91,7 +96,15 @@ function parseFloatInRange(raw: string, min: number, max: number): number | null
 
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
-  const dragRef = useRef<DragState>({ mode: "none", chargeIndex: -1, lastClientX: 0, lastClientY: 0, moved: false })
+  const dragRef = useRef<DragState>({
+    mode: "none",
+    chargeIndex: -1,
+    conductorIndex: -1,
+    resizeHandle: null,
+    lastClientX: 0,
+    lastClientY: 0,
+    moved: false
+  })
 
   const [scene, setScene] = useState<Scene>(defaultScene)
 
@@ -114,6 +127,7 @@ export default function App() {
   const [status, setStatus] = useState<string>("idle")
   const [inputError, setInputError] = useState<string | null>(null)
   const [selected, setSelected] = useState<number>(0)
+  const [selectedConductor, setSelectedConductor] = useState<number>(0)
   const [mode, setMode] = useState<"move" | "probe">("move")
   const [probe, setProbe] = useState<Probe | null>(null)
 
@@ -137,12 +151,17 @@ export default function App() {
   const [selectedQInput, setSelectedQInput] = useState(defaultScene.charges[0]?.q.toString() ?? "")
 
   const selectedCharge: PointCharge | null = scene.charges[selected] ?? null
+  const selectedCond: Conductor | null = scene.conductors[selectedConductor] ?? null
   const currentDomain: DomainBounds = phiField ?? scene.domain
 
   useEffect(() => {
     const q = scene.charges[selected]?.q
     setSelectedQInput(q == null ? "" : String(q))
   }, [scene.charges, selected])
+
+  useEffect(() => {
+    setSelectedConductor(i => clamp(i, 0, Math.max(0, scene.conductors.length - 1)))
+  }, [scene.conductors.length])
 
   useEffect(() => {
     setViewState(v => clampView(v, currentDomain))
@@ -168,7 +187,9 @@ export default function App() {
       debugAxes,
       viewBounds: bounds,
       probe,
-      charges: scene.charges
+      charges: scene.charges,
+      conductors: scene.conductors,
+      selectedConductorIndex: selectedConductor
     })
   }, [
     phiField,
@@ -183,7 +204,9 @@ export default function App() {
     shadingStrength,
     debugAxes,
     probe,
-    scene.charges
+    scene.charges,
+    scene.conductors,
+    selectedConductor
   ])
 
   useEffect(() => {
@@ -209,6 +232,47 @@ export default function App() {
   useEffect(() => {
     renderCurrent()
   }, [renderCurrent])
+
+  const zoomAt = useCallback((clientX: number, clientY: number, deltaY: number) => {
+    const c = canvasRef.current
+    const p = clientToCanvas(clientX, clientY)
+    if (!c || !p) return
+
+    const domain = currentDomain
+    setViewState(prev => {
+      const prevClamped = clampView(prev, domain)
+      const prevBounds = viewBoundsFrom(prevClamped, domain)
+      const worldBefore = screenToWorld(c, domain, p.sx, p.sy, prevBounds)
+      if (!worldBefore) return prevClamped
+
+      const zoomMul = Math.exp(-deltaY * 0.0015)
+      let next = clampView({ ...prevClamped, zoom: prevClamped.zoom * zoomMul }, domain)
+      const nextBounds = viewBoundsFrom(next, domain)
+      const worldAfter = screenToWorld(c, domain, p.sx, p.sy, nextBounds)
+      if (!worldAfter) return next
+
+      next = clampView({
+        ...next,
+        centerX: next.centerX + (worldBefore.x - worldAfter.x),
+        centerY: next.centerY + (worldBefore.y - worldAfter.y)
+      }, domain)
+      return next
+    })
+  }, [currentDomain])
+
+  useEffect(() => {
+    const c = canvasRef.current
+    if (!c) return
+
+    const onWheelNative = (ev: WheelEvent) => {
+      ev.preventDefault()
+      ev.stopPropagation()
+      zoomAt(ev.clientX, ev.clientY, ev.deltaY)
+    }
+
+    c.addEventListener("wheel", onWheelNative, { passive: false })
+    return () => c.removeEventListener("wheel", onWheelNative)
+  }, [zoomAt])
 
   function commitSelectedChargeQ(raw: string) {
     setSelectedQInput(raw)
@@ -271,6 +335,27 @@ export default function App() {
 
     const clipV = parseFloatInRange(clipPercentileInput, 0, 20)
     if (clipV == null) return { ok: false, message: "invalid percentile clip (expected number 0..20)" }
+
+    for (let i = 0; i < scene.conductors.length; i++) {
+      const c = scene.conductors[i]
+      if (!Number.isFinite(c.potential)) return { ok: false, message: `invalid conductor #${i} potential` }
+      if (c.kind === "rectangle") {
+        if (
+          !Number.isFinite(c.xMin) || !Number.isFinite(c.xMax) ||
+          !Number.isFinite(c.yMin) || !Number.isFinite(c.yMax)
+        ) return { ok: false, message: `invalid rectangle conductor #${i} bounds` }
+        if (!(c.xMax > c.xMin && c.yMax > c.yMin)) {
+          return { ok: false, message: `rectangle conductor #${i}: require xMax>xMin and yMax>yMin` }
+        }
+      } else if (c.kind === "circle") {
+        if (!Number.isFinite(c.x) || !Number.isFinite(c.y) || !Number.isFinite(c.radius)) {
+          return { ok: false, message: `invalid circle conductor #${i} params` }
+        }
+        if (!(c.radius > 0)) return { ok: false, message: `circle conductor #${i}: radius must be > 0` }
+      } else {
+        return { ok: false, message: `unsupported conductor kind on #${i}` }
+      }
+    }
 
     if (selectedCharge) {
       const qV = parseFinite(selectedQInput)
@@ -396,6 +481,68 @@ export default function App() {
     return best
   }
 
+  function hitTestSelectedConductorHandle(
+    clientX: number,
+    clientY: number,
+    domain: DomainBounds,
+    bounds: DomainBounds
+  ): { index: number; handle: ResizeHandle } | null {
+    const c = canvasRef.current
+    const p = clientToCanvas(clientX, clientY)
+    const selectedC = scene.conductors[selectedConductor]
+    if (!c || !p || !selectedC) return null
+
+    const threshold = CONDUCTOR_HANDLE_HIT_RADIUS_CSS_PX * p.scaleX
+    const t2 = threshold * threshold
+
+    const handleHit = (hx: number, hy: number, handle: ResizeHandle) => {
+      const dx = hx - p.sx
+      const dy = hy - p.sy
+      return dx * dx + dy * dy <= t2 ? { index: selectedConductor, handle } : null
+    }
+
+    if (selectedC.kind === "rectangle") {
+      const sw = worldToScreen(c, domain, selectedC.xMin, selectedC.yMin, bounds)
+      const se = worldToScreen(c, domain, selectedC.xMax, selectedC.yMin, bounds)
+      const nw = worldToScreen(c, domain, selectedC.xMin, selectedC.yMax, bounds)
+      const ne = worldToScreen(c, domain, selectedC.xMax, selectedC.yMax, bounds)
+
+      return (
+        handleHit(sw.x, sw.y, "rect-sw") ??
+        handleHit(se.x, se.y, "rect-se") ??
+        handleHit(nw.x, nw.y, "rect-nw") ??
+        handleHit(ne.x, ne.y, "rect-ne")
+      )
+    }
+
+    const center = worldToScreen(c, domain, selectedC.x, selectedC.y, bounds)
+    const edge = worldToScreen(c, domain, selectedC.x + selectedC.radius, selectedC.y, bounds)
+    return handleHit(edge.x, edge.y, "circle-radius") ??
+      // also allow grabbing circle border anywhere around radius
+      (() => {
+        const dx = p.sx - center.x
+        const dy = p.sy - center.y
+        const rr = Math.hypot(edge.x - center.x, edge.y - center.y)
+        return Math.abs(Math.hypot(dx, dy) - rr) <= threshold ? { index: selectedConductor, handle: "circle-radius" as const } : null
+      })()
+  }
+
+  function hitTestConductorBody(clientX: number, clientY: number, domain: DomainBounds, bounds: DomainBounds): number {
+    const w = clientToWorld(clientX, clientY, domain, bounds)
+    if (!w) return -1
+
+    for (let i = scene.conductors.length - 1; i >= 0; i--) {
+      const c = scene.conductors[i]
+      if (c.kind === "rectangle") {
+        if (w.x >= c.xMin && w.x <= c.xMax && w.y >= c.yMin && w.y <= c.yMax) return i
+      } else {
+        if (Math.hypot(w.x - c.x, w.y - c.y) <= c.radius) return i
+      }
+    }
+
+    return -1
+  }
+
   function onCanvasMouseDown(ev: React.MouseEvent) {
     const domain = currentDomain
     const bounds = viewBoundsFrom(viewState, domain)
@@ -406,6 +553,8 @@ export default function App() {
       dragRef.current = {
         mode: "pan",
         chargeIndex: -1,
+        conductorIndex: -1,
+        resizeHandle: null,
         lastClientX: ev.clientX,
         lastClientY: ev.clientY,
         moved: false
@@ -415,6 +564,22 @@ export default function App() {
 
     if (ev.button !== 0) return
 
+    const handleHit = hitTestSelectedConductorHandle(ev.clientX, ev.clientY, domain, bounds)
+    if (handleHit) {
+      ev.preventDefault()
+      setProbe(null)
+      dragRef.current = {
+        mode: "conductorResize",
+        chargeIndex: -1,
+        conductorIndex: handleHit.index,
+        resizeHandle: handleHit.handle,
+        lastClientX: ev.clientX,
+        lastClientY: ev.clientY,
+        moved: false
+      }
+      return
+    }
+
     const hit = hitTestCharge(ev.clientX, ev.clientY, domain, bounds)
     if (hit >= 0) {
       ev.preventDefault()
@@ -423,6 +588,25 @@ export default function App() {
       dragRef.current = {
         mode: "charge",
         chargeIndex: hit,
+        conductorIndex: -1,
+        resizeHandle: null,
+        lastClientX: ev.clientX,
+        lastClientY: ev.clientY,
+        moved: false
+      }
+      return
+    }
+
+    const hitCond = hitTestConductorBody(ev.clientX, ev.clientY, domain, bounds)
+    if (hitCond >= 0) {
+      ev.preventDefault()
+      setSelectedConductor(hitCond)
+      setProbe(null)
+      dragRef.current = {
+        mode: "conductorMove",
+        chargeIndex: -1,
+        conductorIndex: hitCond,
+        resizeHandle: null,
         lastClientX: ev.clientX,
         lastClientY: ev.clientY,
         moved: false
@@ -499,6 +683,102 @@ export default function App() {
         ch[drag.chargeIndex] = { ...ch[drag.chargeIndex], x: w.x, y: w.y }
         return { ...s, charges: ch }
       })
+      return
+    }
+
+    if (drag.mode === "conductorMove") {
+      const c = canvasRef.current
+      if (!c) return
+      const p = clientToCanvas(ev.clientX, ev.clientY)
+      const prev = clientToCanvas(drag.lastClientX, drag.lastClientY)
+      if (!p || !prev) return
+      const vp = getDomainViewport(c, domain)
+      const worldPerPixX = (bounds.xMax - bounds.xMin) / Math.max(1e-12, vp.width)
+      const worldPerPixY = (bounds.yMax - bounds.yMin) / Math.max(1e-12, vp.height)
+      const dxWorld = (p.sx - prev.sx) * worldPerPixX
+      const dyWorld = -(p.sy - prev.sy) * worldPerPixY
+
+      if (Math.abs(dxWorld) > 0 || Math.abs(dyWorld) > 0) {
+        drag.moved = true
+      }
+
+      drag.lastClientX = ev.clientX
+      drag.lastClientY = ev.clientY
+
+      setScene(s => {
+        if (drag.conductorIndex < 0 || drag.conductorIndex >= s.conductors.length) return s
+        const next = [...s.conductors]
+        const cond = next[drag.conductorIndex]
+        next[drag.conductorIndex] = cond.kind === "rectangle"
+          ? {
+              ...cond,
+              xMin: cond.xMin + dxWorld,
+              xMax: cond.xMax + dxWorld,
+              yMin: cond.yMin + dyWorld,
+              yMax: cond.yMax + dyWorld
+            }
+          : {
+              ...cond,
+              x: cond.x + dxWorld,
+              y: cond.y + dyWorld
+            }
+        return { ...s, conductors: next }
+      })
+      return
+    }
+
+    if (drag.mode === "conductorResize") {
+      const w = clientToWorld(ev.clientX, ev.clientY, domain, bounds)
+      if (!w) return
+      const minSize = 1e-4 * Math.max(domain.xMax - domain.xMin, domain.yMax - domain.yMin)
+
+      if (Math.abs(ev.clientX - drag.lastClientX) > 0.25 || Math.abs(ev.clientY - drag.lastClientY) > 0.25) {
+        drag.moved = true
+      }
+      drag.lastClientX = ev.clientX
+      drag.lastClientY = ev.clientY
+
+      setScene(s => {
+        if (drag.conductorIndex < 0 || drag.conductorIndex >= s.conductors.length) return s
+        const next = [...s.conductors]
+        const cond = next[drag.conductorIndex]
+        const handle = drag.resizeHandle
+        if (!handle) return s
+
+        if (cond.kind === "circle" && handle === "circle-radius") {
+          next[drag.conductorIndex] = {
+            ...cond,
+            radius: Math.max(minSize, Math.hypot(w.x - cond.x, w.y - cond.y))
+          }
+          return { ...s, conductors: next }
+        }
+
+        if (cond.kind === "rectangle") {
+          let xMin = cond.xMin
+          let xMax = cond.xMax
+          let yMin = cond.yMin
+          let yMax = cond.yMax
+
+          if (handle === "rect-sw") {
+            xMin = Math.min(w.x, xMax - minSize)
+            yMin = Math.min(w.y, yMax - minSize)
+          } else if (handle === "rect-se") {
+            xMax = Math.max(w.x, xMin + minSize)
+            yMin = Math.min(w.y, yMax - minSize)
+          } else if (handle === "rect-nw") {
+            xMin = Math.min(w.x, xMax - minSize)
+            yMax = Math.max(w.y, yMin + minSize)
+          } else if (handle === "rect-ne") {
+            xMax = Math.max(w.x, xMin + minSize)
+            yMax = Math.max(w.y, yMin + minSize)
+          }
+
+          next[drag.conductorIndex] = { ...cond, xMin, xMax, yMin, yMax }
+          return { ...s, conductors: next }
+        }
+
+        return s
+      })
     }
   }
 
@@ -506,44 +786,21 @@ export default function App() {
     const drag = dragRef.current
     if (drag.mode === "none") return
 
-    const movedCharge = drag.mode === "charge" && drag.moved
-    dragRef.current = { mode: "none", chargeIndex: -1, lastClientX: 0, lastClientY: 0, moved: false }
+    const movedPhysicsObject =
+      (drag.mode === "charge" || drag.mode === "conductorMove" || drag.mode === "conductorResize") && drag.moved
+    dragRef.current = {
+      mode: "none",
+      chargeIndex: -1,
+      conductorIndex: -1,
+      resizeHandle: null,
+      lastClientX: 0,
+      lastClientY: 0,
+      moved: false
+    }
 
-    if (movedCharge) {
+    if (movedPhysicsObject) {
       void runSolve()
     }
-  }
-
-  function onCanvasWheel(ev: React.WheelEvent) {
-    ev.preventDefault()
-
-    const c = canvasRef.current
-    const p = clientToCanvas(ev.clientX, ev.clientY)
-    if (!c || !p) return
-
-    const domain = currentDomain
-
-    setViewState(prev => {
-      const prevClamped = clampView(prev, domain)
-      const prevBounds = viewBoundsFrom(prevClamped, domain)
-      const worldBefore = screenToWorld(c, domain, p.sx, p.sy, prevBounds)
-      if (!worldBefore) return prevClamped
-
-      const zoomMul = Math.exp(-ev.deltaY * 0.0015)
-      let next = clampView({ ...prevClamped, zoom: prevClamped.zoom * zoomMul }, domain)
-      const nextBounds = viewBoundsFrom(next, domain)
-      const worldAfter = screenToWorld(c, domain, p.sx, p.sy, nextBounds)
-
-      if (!worldAfter) return next
-
-      next = clampView({
-        ...next,
-        centerX: next.centerX + (worldBefore.x - worldAfter.x),
-        centerY: next.centerY + (worldBefore.y - worldAfter.y)
-      }, domain)
-
-      return next
-    })
   }
 
   function samplePhi(x: number, y: number): number | null {
@@ -596,6 +853,56 @@ export default function App() {
     setSelected(idx => Math.max(0, Math.min(idx, scene.charges.length - 2)))
   }
 
+  function addRectangleConductor() {
+    setScene(s => {
+      const c: Conductor = {
+        kind: "rectangle",
+        potential: 0,
+        xMin: -0.3,
+        xMax: 0.3,
+        yMin: -0.2,
+        yMax: 0.2
+      }
+      const next = [...s.conductors, c]
+      setSelectedConductor(next.length - 1)
+      return { ...s, conductors: next }
+    })
+  }
+
+  function addCircleConductor() {
+    setScene(s => {
+      const c: Conductor = {
+        kind: "circle",
+        potential: 0,
+        x: 0,
+        y: 0,
+        radius: 0.25
+      }
+      const next = [...s.conductors, c]
+      setSelectedConductor(next.length - 1)
+      return { ...s, conductors: next }
+    })
+  }
+
+  function removeSelectedConductor() {
+    setScene(s => {
+      if (s.conductors.length === 0) return s
+      const next = s.conductors.filter((_, i) => i !== selectedConductor)
+      return { ...s, conductors: next }
+    })
+    setSelectedConductor(i => Math.max(0, Math.min(i, scene.conductors.length - 2)))
+  }
+
+  function patchSelectedConductor(mut: (c: Conductor) => Conductor) {
+    setScene(s => {
+      if (s.conductors.length === 0) return s
+      const idx = clamp(selectedConductor, 0, s.conductors.length - 1)
+      const next = [...s.conductors]
+      next[idx] = mut(next[idx])
+      return { ...s, conductors: next }
+    })
+  }
+
   return (
     <div style={{ display: "flex", gap: 16, padding: 16, fontFamily: "system-ui, -apple-system, sans-serif" }}>
       <div style={{ width: 340 }}>
@@ -610,6 +917,9 @@ export default function App() {
           <button onClick={() => addCharge(+1)}>+ charge</button>
           <button onClick={() => addCharge(-1)}>- charge</button>
           <button onClick={removeSelected} disabled={scene.charges.length === 0}>del</button>
+          <button onClick={addRectangleConductor}>+ rect cond</button>
+          <button onClick={addCircleConductor}>+ circle cond</button>
+          <button onClick={removeSelectedConductor} disabled={scene.conductors.length === 0}>del cond</button>
           <button onClick={() => setViewState(makeDefaultView(currentDomain))}>reset view</button>
         </div>
 
@@ -677,6 +987,169 @@ export default function App() {
                 style={{ width: "100%" }}
               />
             </label>
+          </div>
+        )}
+
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ fontWeight: 600 }}>conductors</div>
+          {scene.conductors.length === 0 && (
+            <div style={{ marginTop: 6, fontSize: 12, color: "#666" }}>none</div>
+          )}
+          {scene.conductors.map((c, i) => (
+            <div
+              key={i}
+              onClick={() => setSelectedConductor(i)}
+              style={{
+                cursor: "pointer",
+                padding: "6px 8px",
+                marginTop: 6,
+                border: "1px solid #ddd",
+                borderRadius: 8,
+                background: i === selectedConductor ? "#f2f2f2" : "white",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                fontSize: 12
+              }}
+            >
+              <div>
+                <div>#{i} {c.kind} V={c.potential.toFixed(3)}</div>
+                {c.kind === "rectangle" ? (
+                  <div style={{ color: "#555" }}>
+                    [{c.xMin.toFixed(2)}, {c.xMax.toFixed(2)}] x [{c.yMin.toFixed(2)}, {c.yMax.toFixed(2)}]
+                  </div>
+                ) : (
+                  <div style={{ color: "#555" }}>
+                    c=({c.x.toFixed(2)}, {c.y.toFixed(2)}) r={c.radius.toFixed(2)}
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {selectedCond && (
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ fontWeight: 600, marginBottom: 6 }}>selected conductor</div>
+            <label style={{ display: "block", fontSize: 12 }}>
+              type
+              <select
+                value={selectedCond.kind}
+                onChange={e => {
+                  const k = e.target.value
+                  if (k === "rectangle") {
+                    patchSelectedConductor(c => c.kind === "rectangle" ? c : ({
+                      kind: "rectangle",
+                      potential: c.potential,
+                      xMin: c.x - c.radius,
+                      xMax: c.x + c.radius,
+                      yMin: c.y - c.radius,
+                      yMax: c.y + c.radius
+                    }))
+                  } else {
+                    patchSelectedConductor(c => c.kind === "circle" ? c : ({
+                      kind: "circle",
+                      potential: c.potential,
+                      x: 0.5 * (c.xMin + c.xMax),
+                      y: 0.5 * (c.yMin + c.yMax),
+                      radius: 0.5 * Math.max(Math.abs(c.xMax - c.xMin), Math.abs(c.yMax - c.yMin))
+                    }))
+                  }
+                }}
+                style={{ width: "100%" }}
+              >
+                <option value="rectangle">rectangle</option>
+                <option value="circle">circle</option>
+              </select>
+            </label>
+            <label style={{ display: "block", fontSize: 12, marginTop: 6 }}>
+              potential
+              <input
+                type="number"
+                value={selectedCond.potential}
+                step={0.1}
+                onChange={e => patchSelectedConductor(c => ({ ...c, potential: Number(e.target.value) }))}
+                style={{ width: "100%" }}
+              />
+            </label>
+            {selectedCond.kind === "rectangle" ? (
+              <>
+                <label style={{ display: "block", fontSize: 12, marginTop: 6 }}>
+                  x min
+                  <input
+                    type="number"
+                    value={selectedCond.xMin}
+                    step={0.05}
+                    onChange={e => patchSelectedConductor(c => c.kind === "rectangle" ? { ...c, xMin: Number(e.target.value) } : c)}
+                    style={{ width: "100%" }}
+                  />
+                </label>
+                <label style={{ display: "block", fontSize: 12, marginTop: 6 }}>
+                  x max
+                  <input
+                    type="number"
+                    value={selectedCond.xMax}
+                    step={0.05}
+                    onChange={e => patchSelectedConductor(c => c.kind === "rectangle" ? { ...c, xMax: Number(e.target.value) } : c)}
+                    style={{ width: "100%" }}
+                  />
+                </label>
+                <label style={{ display: "block", fontSize: 12, marginTop: 6 }}>
+                  y min
+                  <input
+                    type="number"
+                    value={selectedCond.yMin}
+                    step={0.05}
+                    onChange={e => patchSelectedConductor(c => c.kind === "rectangle" ? { ...c, yMin: Number(e.target.value) } : c)}
+                    style={{ width: "100%" }}
+                  />
+                </label>
+                <label style={{ display: "block", fontSize: 12, marginTop: 6 }}>
+                  y max
+                  <input
+                    type="number"
+                    value={selectedCond.yMax}
+                    step={0.05}
+                    onChange={e => patchSelectedConductor(c => c.kind === "rectangle" ? { ...c, yMax: Number(e.target.value) } : c)}
+                    style={{ width: "100%" }}
+                  />
+                </label>
+              </>
+            ) : (
+              <>
+                <label style={{ display: "block", fontSize: 12, marginTop: 6 }}>
+                  center x
+                  <input
+                    type="number"
+                    value={selectedCond.x}
+                    step={0.05}
+                    onChange={e => patchSelectedConductor(c => c.kind === "circle" ? { ...c, x: Number(e.target.value) } : c)}
+                    style={{ width: "100%" }}
+                  />
+                </label>
+                <label style={{ display: "block", fontSize: 12, marginTop: 6 }}>
+                  center y
+                  <input
+                    type="number"
+                    value={selectedCond.y}
+                    step={0.05}
+                    onChange={e => patchSelectedConductor(c => c.kind === "circle" ? { ...c, y: Number(e.target.value) } : c)}
+                    style={{ width: "100%" }}
+                  />
+                </label>
+                <label style={{ display: "block", fontSize: 12, marginTop: 6 }}>
+                  radius
+                  <input
+                    type="number"
+                    value={selectedCond.radius}
+                    step={0.05}
+                    min={0}
+                    onChange={e => patchSelectedConductor(c => c.kind === "circle" ? { ...c, radius: Number(e.target.value) } : c)}
+                    style={{ width: "100%" }}
+                  />
+                </label>
+              </>
+            )}
           </div>
         )}
 
@@ -862,9 +1335,14 @@ export default function App() {
           onMouseMove={onCanvasMouseMove}
           onMouseUp={finishDrag}
           onMouseLeave={finishDrag}
-          onWheel={onCanvasWheel}
           onContextMenu={e => e.preventDefault()}
-          style={{ display: "block", border: "1px solid #ddd", borderRadius: 12 }}
+          style={{
+            display: "block",
+            border: "1px solid #ddd",
+            borderRadius: 12,
+            overscrollBehavior: "contain",
+            touchAction: "none"
+          }}
         />
       </div>
     </div>

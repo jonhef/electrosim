@@ -1,5 +1,4 @@
 using System.Collections.Generic;
-using System.Numerics;
 
 namespace Electro;
 
@@ -36,8 +35,12 @@ public static class Solver
 
         var phi = new float[nx * ny];
         var rho = new float[nx * ny];
+        var fixedMask = new bool[nx * ny];
+        var fixedPhi = new float[nx * ny];
 
         DepositChargesGaussian(scene, nx, ny, xMin, yMin, dx, dy, solver.ChargeSigmaCells, rho);
+        RasterizeConductors(scene, nx, ny, xMin, yMin, dx, dy, fixedMask, fixedPhi);
+        ApplyFixedPotential(phi, fixedMask, fixedPhi);
 
         // rhs b = rho/eps
         // equation: -(phi_xx + phi_yy) = rho/eps
@@ -57,6 +60,7 @@ public static class Solver
         {
             // neumann boundary: copy adjacent interior values each iter (cheap and works ok for mvp)
             ApplyNeumannZero(phi, nx, ny);
+            ApplyFixedPotential(phi, fixedMask, fixedPhi);
 
             // gauss-seidel sweep + sor
             for (int j = 1; j < ny - 1; j++)
@@ -65,6 +69,7 @@ public static class Solver
                 for (int i = 1; i < nx - 1; i++)
                 {
                     int k = row + i;
+                    if (fixedMask[k]) continue;
 
                     float phiW = phi[k - 1];
                     float phiE = phi[k + 1];
@@ -77,10 +82,11 @@ public static class Solver
                     phi[k] = phi[k] + omega * (phiNew - phi[k]);
                 }
             }
+            ApplyFixedPotential(phi, fixedMask, fixedPhi);
 
             if (it % 10 == 0 || it == maxIters - 1)
             {
-                residual = ComputeResidualL2(phi, rho, eps, nx, ny, invDx2, invDy2);
+                residual = ComputeResidualL2(phi, rho, eps, nx, ny, invDx2, invDy2, fixedMask);
                 residualLog?.Add(residual);
                 if (residual < tol) break;
             }
@@ -88,6 +94,7 @@ public static class Solver
 
         // final boundary copy
         ApplyNeumannZero(phi, nx, ny);
+        ApplyFixedPotential(phi, fixedMask, fixedPhi);
 
         // range for visualization
         float min = float.PositiveInfinity, max = float.NegativeInfinity;
@@ -120,6 +127,98 @@ public static class Solver
             Iterations = it + 1,
             Residual = residual
         };
+    }
+
+    private static void RasterizeConductors(
+        SceneDto scene, int nx, int ny,
+        float xMin, float yMin, float dx, float dy,
+        bool[] fixedMask, float[] fixedPhi)
+    {
+        if (scene.Conductors.Count == 0) return;
+
+        foreach (var c in scene.Conductors)
+        {
+            var kind = (c.Kind ?? string.Empty).Trim().ToLowerInvariant();
+            switch (kind)
+            {
+                case "rectangle":
+                case "rect":
+                    RasterizeRectangle(c, nx, ny, xMin, yMin, dx, dy, fixedMask, fixedPhi);
+                    break;
+                case "circle":
+                case "disk":
+                    RasterizeCircle(c, nx, ny, xMin, yMin, dx, dy, fixedMask, fixedPhi);
+                    break;
+                default:
+                    throw new ArgumentException($"unsupported conductor kind '{c.Kind}'");
+            }
+        }
+    }
+
+    private static void RasterizeRectangle(
+        ConductorDto c, int nx, int ny,
+        float xMin, float yMin, float dx, float dy,
+        bool[] fixedMask, float[] fixedPhi)
+    {
+        if (!(c.XMax > c.XMin) || !(c.YMax > c.YMin)) return;
+
+        int iStart = Math.Max(0, (int)MathF.Ceiling((c.XMin - xMin) / dx));
+        int iEnd = Math.Min(nx - 1, (int)MathF.Floor((c.XMax - xMin) / dx));
+        int jStart = Math.Max(0, (int)MathF.Ceiling((c.YMin - yMin) / dy));
+        int jEnd = Math.Min(ny - 1, (int)MathF.Floor((c.YMax - yMin) / dy));
+        if (iStart > iEnd || jStart > jEnd) return;
+
+        for (int j = jStart; j <= jEnd; j++)
+        {
+            int row = j * nx;
+            for (int i = iStart; i <= iEnd; i++)
+            {
+                int k = row + i;
+                fixedMask[k] = true;
+                fixedPhi[k] = c.Potential;
+            }
+        }
+    }
+
+    private static void RasterizeCircle(
+        ConductorDto c, int nx, int ny,
+        float xMin, float yMin, float dx, float dy,
+        bool[] fixedMask, float[] fixedPhi)
+    {
+        if (!(c.Radius > 0f)) return;
+
+        float r2 = c.Radius * c.Radius;
+
+        int iStart = Math.Max(0, (int)MathF.Ceiling((c.X - c.Radius - xMin) / dx));
+        int iEnd = Math.Min(nx - 1, (int)MathF.Floor((c.X + c.Radius - xMin) / dx));
+        int jStart = Math.Max(0, (int)MathF.Ceiling((c.Y - c.Radius - yMin) / dy));
+        int jEnd = Math.Min(ny - 1, (int)MathF.Floor((c.Y + c.Radius - yMin) / dy));
+        if (iStart > iEnd || jStart > jEnd) return;
+
+        for (int j = jStart; j <= jEnd; j++)
+        {
+            float yy = yMin + j * dy;
+            float dyc = yy - c.Y;
+            int row = j * nx;
+            for (int i = iStart; i <= iEnd; i++)
+            {
+                float xx = xMin + i * dx;
+                float dxc = xx - c.X;
+                if (dxc * dxc + dyc * dyc > r2) continue;
+
+                int k = row + i;
+                fixedMask[k] = true;
+                fixedPhi[k] = c.Potential;
+            }
+        }
+    }
+
+    private static void ApplyFixedPotential(float[] phi, bool[] fixedMask, float[] fixedPhi)
+    {
+        for (int k = 0; k < phi.Length; k++)
+        {
+            if (fixedMask[k]) phi[k] = fixedPhi[k];
+        }
     }
 
     private static void DepositChargesGaussian(
@@ -220,7 +319,9 @@ public static class Solver
         }
     }
 
-    private static float ComputeResidualL2(float[] phi, float[] rho, float eps, int nx, int ny, float invDx2, float invDy2)
+    private static float ComputeResidualL2(
+        float[] phi, float[] rho, float eps, int nx, int ny,
+        float invDx2, float invDy2, bool[] fixedMask)
     {
         double sum = 0.0;
         int cnt = 0;
@@ -231,6 +332,7 @@ public static class Solver
             for (int i = 1; i < nx - 1; i++)
             {
                 int k = row + i;
+                if (fixedMask[k]) continue;
 
                 float phiC = phi[k];
                 float phiW = phi[k - 1];

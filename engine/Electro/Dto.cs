@@ -29,6 +29,7 @@ public sealed class SceneDto
 {
     public DomainDto Domain { get; set; } = new();
     public List<PointChargeDto> Charges { get; set; } = new();
+    public List<ConductorDto> Conductors { get; set; } = new();
 }
 
 public sealed class DomainDto
@@ -47,6 +48,26 @@ public sealed class PointChargeDto
     public float X { get; set; }
     public float Y { get; set; }
     public float Q { get; set; } // arbitrary units in this mvp
+}
+
+// Conductor with fixed potential (Dirichlet).
+// rectangle: Kind="rectangle", use XMin/XMax/YMin/YMax
+// circle: Kind="circle", use X/Y/Radius
+public sealed class ConductorDto
+{
+    public string Kind { get; set; } = "rectangle";
+    public float Potential { get; set; } = 0f;
+
+    // rectangle
+    public float XMin { get; set; }
+    public float XMax { get; set; }
+    public float YMin { get; set; }
+    public float YMax { get; set; }
+
+    // circle
+    public float X { get; set; }
+    public float Y { get; set; }
+    public float Radius { get; set; }
 }
 
 public sealed class GridSpecDto

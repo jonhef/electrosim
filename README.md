@@ -5,8 +5,16 @@ This engine/UI pair solves a **2D Poisson equation** on a rectangular domain and
 ## What is solved
 - Equation: `-∇²φ = ρ / ε` on a uniform Cartesian grid with cell sizes `dx`, `dy`.
 - Boundary condition: homogeneous Neumann (`∂φ/∂n = 0`) enforced each iteration by copying the interior neighbor (isolated box, no open/free-space radiation).
+- Optional internal Dirichlet regions (`scene.conductors`) for fixed-potential conductors (`rectangle`, `circle`).
 - Solver: Gauss–Seidel with SOR over the interior; the residual reported is the discrete L2 norm of `-laplacian(phi) - rho/eps`.
 - Units are arbitrary; `ε` defaults to 1 unless provided via the scene domain.
+
+## Conductors (fixed potential)
+Add conductor objects in the scene:
+- `rectangle`: `kind="rectangle"` with `xMin/xMax/yMin/yMax` and `potential`.
+- `circle`: `kind="circle"` with `x/y/radius` and `potential`.
+
+All grid cells covered by a conductor are constrained to the specified potential every iteration (Dirichlet condition).
 
 ## How point charges are regularized
 - Each point charge `(x, y, q)` is deposited into `ρ` as a Gaussian blob with standard deviation `sigmaCells * dx` (and `dy`), truncated at ~3σ.

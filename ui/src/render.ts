@@ -1,4 +1,4 @@
-import type { PhiField, PointCharge, Probe } from "./types"
+import type { Conductor, PhiField, PointCharge, Probe } from "./types"
 
 export type ScaleMode = "linear" | "symmetric" | "log"
 export type DomainBounds = { xMin: number; xMax: number; yMin: number; yMax: number }
@@ -18,6 +18,8 @@ export type RenderOptions = {
   viewBounds?: DomainBounds
   probe?: Probe | null
   charges?: PointCharge[]
+  conductors?: Conductor[]
+  selectedConductorIndex?: number
 }
 
 type Normalization = {
@@ -85,6 +87,10 @@ export function renderFieldToCanvas(canvas: HTMLCanvasElement, field: PhiField, 
 
   if (opts.showField) {
     drawFieldArrows(canvas, ctx, field, Math.max(2, Math.floor(opts.fieldStride)), viewport, viewBounds)
+  }
+
+  if (opts.conductors && opts.conductors.length) {
+    drawConductors(canvas, ctx, opts.conductors, viewBounds, viewport, opts.selectedConductorIndex)
   }
 
   if (opts.charges && opts.charges.length) {
@@ -349,6 +355,93 @@ function drawProbe(
   ctx.fillStyle = "rgba(0,0,0,0.9)"
   ctx.font = "12px system-ui, -apple-system, sans-serif"
   ctx.fillText(label, x + padding, y - h / 2 + 4)
+  ctx.restore()
+}
+
+function drawConductors(
+  canvas: HTMLCanvasElement,
+  ctx: CanvasRenderingContext2D,
+  conductors: Conductor[],
+  viewBounds: DomainBounds,
+  viewport: Viewport,
+  selectedIndex?: number
+) {
+  ctx.save()
+  ctx.lineWidth = 1.2
+  ctx.font = "11px system-ui, -apple-system, sans-serif"
+
+  for (let idx = 0; idx < conductors.length; idx++) {
+    const c = conductors[idx]
+    const selected = selectedIndex === idx
+    const isPos = c.potential >= 0
+    const stroke = isPos ? "rgba(230, 80, 80, 0.95)" : "rgba(70, 120, 235, 0.95)"
+    const fill = isPos ? "rgba(230, 80, 80, 0.15)" : "rgba(70, 120, 235, 0.15)"
+    ctx.strokeStyle = stroke
+    ctx.fillStyle = fill
+    ctx.lineWidth = selected ? 2 : 1.2
+
+    if (c.kind === "rectangle") {
+      const p0 = worldToCanvas(canvas, viewBounds, c.xMin, c.yMin, viewport)
+      const p1 = worldToCanvas(canvas, viewBounds, c.xMax, c.yMax, viewport)
+      const x = Math.min(p0.x, p1.x)
+      const y = Math.min(p0.y, p1.y)
+      const w = Math.abs(p1.x - p0.x)
+      const h = Math.abs(p1.y - p0.y)
+      if (w <= 0.2 || h <= 0.2) continue
+      ctx.fillRect(x, y, w, h)
+      ctx.strokeRect(x, y, w, h)
+      const label = `V=${fmt(c.potential)}`
+      ctx.fillStyle = "rgba(10,10,10,0.9)"
+      ctx.fillText(label, x + 4, y + 12)
+
+      if (selected) {
+        drawRectHandle(ctx, p0.x, p0.y)
+        drawRectHandle(ctx, p0.x, p1.y)
+        drawRectHandle(ctx, p1.x, p0.y)
+        drawRectHandle(ctx, p1.x, p1.y)
+      }
+    } else {
+      const pc = worldToCanvas(canvas, viewBounds, c.x, c.y, viewport)
+      const pxEdge = worldToCanvas(canvas, viewBounds, c.x + c.radius, c.y, viewport)
+      const r = Math.abs(pxEdge.x - pc.x)
+      if (r <= 0.2) continue
+      ctx.beginPath()
+      ctx.arc(pc.x, pc.y, r, 0, Math.PI * 2)
+      ctx.fill()
+      ctx.stroke()
+      const label = `V=${fmt(c.potential)}`
+      ctx.fillStyle = "rgba(10,10,10,0.9)"
+      ctx.fillText(label, pc.x + r + 4, pc.y - 4)
+
+      if (selected) {
+        drawCircleResizeHandle(ctx, pc.x + r, pc.y)
+      }
+    }
+  }
+
+  ctx.restore()
+}
+
+function drawRectHandle(ctx: CanvasRenderingContext2D, x: number, y: number) {
+  const s = 4
+  ctx.save()
+  ctx.fillStyle = "rgba(255,255,255,0.95)"
+  ctx.strokeStyle = "rgba(20,20,20,0.9)"
+  ctx.lineWidth = 1
+  ctx.fillRect(x - s, y - s, 2 * s, 2 * s)
+  ctx.strokeRect(x - s, y - s, 2 * s, 2 * s)
+  ctx.restore()
+}
+
+function drawCircleResizeHandle(ctx: CanvasRenderingContext2D, x: number, y: number) {
+  ctx.save()
+  ctx.beginPath()
+  ctx.arc(x, y, 4.5, 0, Math.PI * 2)
+  ctx.fillStyle = "rgba(255,255,255,0.95)"
+  ctx.fill()
+  ctx.strokeStyle = "rgba(20,20,20,0.9)"
+  ctx.lineWidth = 1
+  ctx.stroke()
   ctx.restore()
 }
 
