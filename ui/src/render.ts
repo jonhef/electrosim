@@ -1,6 +1,7 @@
 import type { PhiField, PointCharge, Probe } from "./types"
 
 export type ScaleMode = "linear" | "symmetric" | "log"
+export type DomainBounds = { xMin: number; xMax: number; yMin: number; yMax: number }
 
 export type RenderOptions = {
   showField: boolean
@@ -13,6 +14,8 @@ export type RenderOptions = {
   units?: string
   showShading?: boolean
   shadingStrength?: number
+  debugAxes?: boolean
+  viewBounds?: DomainBounds
   probe?: Probe | null
   charges?: PointCharge[]
 }
@@ -28,7 +31,9 @@ type Normalization = {
 }
 
 type Segment = [number, number, number, number]
-type Point = { x: number; y: number }
+export type ScreenPoint = { x: number; y: number }
+type Point = ScreenPoint
+type Viewport = { x: number; y: number; width: number; height: number }
 
 const DEFAULT_CLIP_PERCENT = 1
 const DEFAULT_UNITS = "arb."
@@ -36,32 +41,66 @@ const BAYER_4X4 = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5]
 const HEATMAP_TMP = document.createElement("canvas")
 const HEATMAP_TMP_CTX = HEATMAP_TMP.getContext("2d")
 
+export function worldToScreen(
+  canvas: HTMLCanvasElement,
+  domain: DomainBounds,
+  x: number,
+  y: number,
+  viewBounds?: DomainBounds
+): Point {
+  const vp = computeViewport(canvas.width, canvas.height, domain)
+  const view = clampViewBounds(domain, viewBounds ?? domain)
+  return worldToCanvasInViewport(vp, view, x, y)
+}
+
+export function screenToWorld(
+  canvas: HTMLCanvasElement,
+  domain: DomainBounds,
+  screenX: number,
+  screenY: number,
+  viewBounds?: DomainBounds
+): Point | null {
+  const vp = computeViewport(canvas.width, canvas.height, domain)
+  const view = clampViewBounds(domain, viewBounds ?? domain)
+  return canvasToWorldInViewport(vp, view, screenX, screenY)
+}
+
+export function getDomainViewport(canvas: HTMLCanvasElement, domain: DomainBounds) {
+  return computeViewport(canvas.width, canvas.height, domain)
+}
+
 // renders float32 phi into canvas as heatmap with optional overlays
 export function renderFieldToCanvas(canvas: HTMLCanvasElement, field: PhiField, opts: RenderOptions) {
   const ctx = canvas.getContext("2d")
   if (!ctx) return
 
+  const viewBounds = clampViewBounds(field, opts.viewBounds ?? field)
+  const viewport = computeViewport(canvas.width, canvas.height, field)
   const norm = buildNormalization(field, opts)
-  drawHeatmap(canvas, ctx, field, norm, opts)
+  drawHeatmap(canvas, ctx, field, norm, opts, viewport, viewBounds)
 
   if (opts.showEquip && opts.equipCount > 0) {
-    drawEquipotentials(canvas, ctx, field, opts.equipCount)
+    drawEquipotentials(canvas, ctx, field, opts.equipCount, viewport, viewBounds)
   }
 
   if (opts.showField) {
-    drawFieldArrows(canvas, ctx, field, Math.max(2, Math.floor(opts.fieldStride)))
+    drawFieldArrows(canvas, ctx, field, Math.max(2, Math.floor(opts.fieldStride)), viewport, viewBounds)
   }
 
   if (opts.charges && opts.charges.length) {
-    drawCharges(canvas, ctx, field, opts.charges)
+    drawCharges(canvas, ctx, field, opts.charges, viewport, viewBounds)
   }
 
   if (opts.probe) {
-    drawProbe(canvas, ctx, field, opts.probe)
+    drawProbe(canvas, ctx, field, opts.probe, viewport, viewBounds)
+  }
+
+  if (opts.debugAxes ?? false) {
+    drawDebugAxes(canvas, ctx, field, viewport, viewBounds)
   }
 
   if (opts.showLegend ?? true) {
-    drawLegend(canvas, ctx, norm, opts)
+    drawLegend(canvas, ctx, norm, opts, viewport)
   }
 }
 
@@ -70,7 +109,9 @@ function drawHeatmap(
   ctx: CanvasRenderingContext2D,
   field: PhiField,
   norm: Normalization,
-  opts: RenderOptions
+  opts: RenderOptions,
+  viewport: Viewport,
+  viewBounds: DomainBounds
 ) {
   const { nx, ny, phi } = field
 
@@ -113,7 +154,7 @@ function drawHeatmap(
         b = linearToSrgb(clamp01(lb * shadeFactor))
       }
 
-      const p = 4 * k
+      const p = 4 * ((ny - 1 - j) * nx + i)
       data[p + 0] = to255(r)
       data[p + 1] = to255(g)
       data[p + 2] = to255(b)
@@ -132,15 +173,25 @@ function drawHeatmap(
 
   ctx.imageSmoothingEnabled = true
   ctx.imageSmoothingQuality = "high"
-  ctx.clearRect(0, 0, canvas.width, canvas.height)
-  ctx.drawImage(HEATMAP_TMP, 0, 0, canvas.width, canvas.height)
+  const domainW = field.xMax - field.xMin
+  const domainH = field.yMax - field.yMin
+  const sx = ((viewBounds.xMin - field.xMin) / domainW) * nx
+  const sw = ((viewBounds.xMax - viewBounds.xMin) / domainW) * nx
+  const sy = ((field.yMax - viewBounds.yMax) / domainH) * ny
+  const sh = ((viewBounds.yMax - viewBounds.yMin) / domainH) * ny
+
+  ctx.fillStyle = "rgb(245 247 250)"
+  ctx.fillRect(0, 0, canvas.width, canvas.height)
+  ctx.drawImage(HEATMAP_TMP, sx, sy, sw, sh, viewport.x, viewport.y, viewport.width, viewport.height)
 }
 
 function drawEquipotentials(
   canvas: HTMLCanvasElement,
   ctx: CanvasRenderingContext2D,
   field: PhiField,
-  levels: number
+  levels: number,
+  viewport: Viewport,
+  viewBounds: DomainBounds
 ) {
   const { phiMin, phiMax } = field
   const span = phiMax - phiMin
@@ -154,8 +205,8 @@ function drawEquipotentials(
     ctx.beginPath()
     for (const seg of segments) {
       const [x1, y1, x2, y2] = seg
-      const p1 = worldToCanvas(canvas, field, x1, y1)
-      const p2 = worldToCanvas(canvas, field, x2, y2)
+      const p1 = worldToCanvas(canvas, viewBounds, x1, y1, viewport)
+      const p2 = worldToCanvas(canvas, viewBounds, x2, y2, viewport)
       ctx.moveTo(p1.x, p1.y)
       ctx.lineTo(p2.x, p2.y)
     }
@@ -170,23 +221,31 @@ function drawFieldArrows(
   canvas: HTMLCanvasElement,
   ctx: CanvasRenderingContext2D,
   field: PhiField,
-  stride: number
+  stride: number,
+  viewport: Viewport,
+  viewBounds: DomainBounds
 ) {
   const { phi, nx, ny, xMin, xMax, yMin, yMax } = field
   const dx = (xMax - xMin) / (nx - 1)
   const dy = (yMax - yMin) / (ny - 1)
 
   const arrows: { x: number; y: number; ex: number; ey: number; mag: number }[] = []
-  const cellPxX = canvas.width / Math.max(1, nx - 1)
-  const cellPxY = canvas.height / Math.max(1, ny - 1)
+  const cellPxX = viewport.width / Math.max(1, nx - 1)
+  const cellPxY = viewport.height / Math.max(1, ny - 1)
   const minSpacingPx = 22
   const adaptiveStride = Math.max(
     Math.max(2, Math.floor(stride)),
     Math.ceil(minSpacingPx / Math.max(1e-6, Math.min(cellPxX, cellPxY)))
   )
 
-  for (let j = adaptiveStride; j < ny - adaptiveStride; j += adaptiveStride) {
-    for (let i = adaptiveStride; i < nx - adaptiveStride; i += adaptiveStride) {
+  const iMin = Math.max(adaptiveStride, Math.floor((viewBounds.xMin - xMin) / dx) - adaptiveStride)
+  const iMax = Math.min(nx - adaptiveStride - 1, Math.ceil((viewBounds.xMax - xMin) / dx) + adaptiveStride)
+  const jMin = Math.max(adaptiveStride, Math.floor((viewBounds.yMin - yMin) / dy) - adaptiveStride)
+  const jMax = Math.min(ny - adaptiveStride - 1, Math.ceil((viewBounds.yMax - yMin) / dy) + adaptiveStride)
+  if (iMin > iMax || jMin > jMax) return
+
+  for (let j = jMin; j <= jMax; j += adaptiveStride) {
+    for (let i = iMin; i <= iMax; i += adaptiveStride) {
       const k = j * nx + i
       const dphidx = (phi[k + 1] - phi[k - 1]) / (2 * dx)
       const dphidy = (phi[k + nx] - phi[k - nx]) / (2 * dy)
@@ -207,7 +266,7 @@ function drawFieldArrows(
   const magP95 = percentileFromArray(arrows.map(a => a.mag), 0.95)
   const normDen = Math.max(1e-12, magP95)
   const minLen = 4
-  const maxLen = Math.min(26, 0.055 * Math.min(canvas.width, canvas.height))
+  const maxLen = Math.min(26, 0.055 * Math.min(viewport.width, viewport.height))
 
   ctx.save()
   ctx.lineWidth = 1.1
@@ -216,7 +275,7 @@ function drawFieldArrows(
     const m = clamp01(a.mag / normDen)
     if (m < 0.03) continue
 
-    const p = worldToCanvas(canvas, field, a.x, a.y)
+    const p = worldToCanvas(canvas, viewBounds, a.x, a.y, viewport)
     const dirX = a.ex / a.mag
     const dirY = -a.ey / a.mag // flip for canvas y-down
     const len = minLen + (maxLen - minLen) * Math.sqrt(m)
@@ -232,14 +291,16 @@ function drawCharges(
   canvas: HTMLCanvasElement,
   ctx: CanvasRenderingContext2D,
   field: PhiField,
-  charges: PointCharge[]
+  charges: PointCharge[],
+  viewport: Viewport,
+  viewBounds: DomainBounds
 ) {
   if (!charges.length) return
   ctx.save()
   ctx.lineWidth = 1.5
 
   for (const c of charges) {
-    const p = worldToCanvas(canvas, field, c.x, c.y)
+    const p = worldToCanvas(canvas, viewBounds, c.x, c.y, viewport)
     const color = c.q >= 0 ? "rgba(240, 60, 60, 0.95)" : "rgba(60, 110, 240, 0.95)"
     const r = 7
     ctx.beginPath()
@@ -257,9 +318,11 @@ function drawProbe(
   canvas: HTMLCanvasElement,
   ctx: CanvasRenderingContext2D,
   field: PhiField,
-  probe: Probe
+  probe: Probe,
+  viewport: Viewport,
+  viewBounds: DomainBounds
 ) {
-  const p = worldToCanvas(canvas, field, probe.x, probe.y)
+  const p = worldToCanvas(canvas, viewBounds, probe.x, probe.y, viewport)
   ctx.save()
   ctx.strokeStyle = "rgba(0,0,0,0.9)"
   ctx.lineWidth = 1
@@ -289,18 +352,56 @@ function drawProbe(
   ctx.restore()
 }
 
+function drawDebugAxes(
+  canvas: HTMLCanvasElement,
+  ctx: CanvasRenderingContext2D,
+  field: PhiField,
+  viewport: Viewport,
+  viewBounds: DomainBounds
+) {
+  ctx.save()
+  ctx.strokeStyle = "rgba(255,255,255,0.35)"
+  ctx.lineWidth = 1
+  ctx.setLineDash([6, 4])
+  ctx.strokeRect(viewport.x + 0.5, viewport.y + 0.5, viewport.width - 1, viewport.height - 1)
+
+  if (field.xMin <= 0 && field.xMax >= 0) {
+    const a = worldToCanvas(canvas, viewBounds, 0, field.yMin, viewport)
+    const b = worldToCanvas(canvas, viewBounds, 0, field.yMax, viewport)
+    ctx.strokeStyle = "rgba(255,255,255,0.45)"
+    ctx.beginPath()
+    ctx.moveTo(a.x, a.y)
+    ctx.lineTo(b.x, b.y)
+    ctx.stroke()
+  }
+
+  if (field.yMin <= 0 && field.yMax >= 0) {
+    const a = worldToCanvas(canvas, viewBounds, field.xMin, 0, viewport)
+    const b = worldToCanvas(canvas, viewBounds, field.xMax, 0, viewport)
+    ctx.strokeStyle = "rgba(255,255,255,0.45)"
+    ctx.beginPath()
+    ctx.moveTo(a.x, a.y)
+    ctx.lineTo(b.x, b.y)
+    ctx.stroke()
+  }
+
+  ctx.setLineDash([])
+  ctx.restore()
+}
+
 function drawLegend(
   canvas: HTMLCanvasElement,
   ctx: CanvasRenderingContext2D,
   norm: Normalization,
-  opts: RenderOptions
+  opts: RenderOptions,
+  viewport: Viewport
 ) {
-  const barH = Math.max(150, Math.min(220, canvas.height - 70))
+  const barH = Math.max(120, Math.min(220, viewport.height - 40))
   const barW = 16
   const panelW = 138
   const panelH = barH + 58
-  const x0 = canvas.width - panelW - 12
-  const y0 = 12
+  const x0 = Math.max(10, Math.min(canvas.width - panelW - 10, viewport.x + viewport.width - panelW - 10))
+  const y0 = Math.max(10, viewport.y + 10)
   const barX = x0 + 10
   const barY = y0 + 30
 
@@ -351,13 +452,113 @@ function drawLegend(
 
 function worldToCanvas(
   canvas: HTMLCanvasElement,
-  field: PhiField,
+  bounds: DomainBounds,
+  x: number,
+  y: number,
+  viewport?: Viewport
+): { x: number; y: number } {
+  const vp = viewport ?? computeViewport(canvas.width, canvas.height, bounds)
+  return worldToCanvasInViewport(vp, bounds, x, y)
+}
+
+function worldToCanvasInViewport(
+  viewport: Viewport,
+  domain: DomainBounds,
   x: number,
   y: number
-): { x: number; y: number } {
-  const u = (x - field.xMin) / (field.xMax - field.xMin)
-  const v = (y - field.yMin) / (field.yMax - field.yMin)
-  return { x: u * canvas.width, y: canvas.height - v * canvas.height }
+): Point {
+  const u = (x - domain.xMin) / (domain.xMax - domain.xMin)
+  const v = (y - domain.yMin) / (domain.yMax - domain.yMin)
+  return {
+    x: viewport.x + u * viewport.width,
+    y: viewport.y + (1 - v) * viewport.height
+  }
+}
+
+function canvasToWorldInViewport(
+  viewport: Viewport,
+  domain: DomainBounds,
+  screenX: number,
+  screenY: number
+): Point | null {
+  if (
+    screenX < viewport.x ||
+    screenX > viewport.x + viewport.width ||
+    screenY < viewport.y ||
+    screenY > viewport.y + viewport.height
+  ) {
+    return null
+  }
+
+  const u = (screenX - viewport.x) / Math.max(1e-12, viewport.width)
+  const v = 1 - (screenY - viewport.y) / Math.max(1e-12, viewport.height)
+  const x = domain.xMin + u * (domain.xMax - domain.xMin)
+  const y = domain.yMin + v * (domain.yMax - domain.yMin)
+  return { x, y }
+}
+
+function clampViewBounds(domain: DomainBounds, view: DomainBounds): DomainBounds {
+  const domainW = domain.xMax - domain.xMin
+  const domainH = domain.yMax - domain.yMin
+  const minW = domainW / 250
+  const minH = domainH / 250
+
+  let w = clamp(view.xMax - view.xMin, minW, domainW)
+  let h = clamp(view.yMax - view.yMin, minH, domainH)
+  const cx = 0.5 * (view.xMin + view.xMax)
+  const cy = 0.5 * (view.yMin + view.yMax)
+
+  let xMin = cx - 0.5 * w
+  let xMax = cx + 0.5 * w
+  let yMin = cy - 0.5 * h
+  let yMax = cy + 0.5 * h
+
+  if (xMin < domain.xMin) {
+    xMax += domain.xMin - xMin
+    xMin = domain.xMin
+  }
+  if (xMax > domain.xMax) {
+    xMin -= xMax - domain.xMax
+    xMax = domain.xMax
+  }
+  if (yMin < domain.yMin) {
+    yMax += domain.yMin - yMin
+    yMin = domain.yMin
+  }
+  if (yMax > domain.yMax) {
+    yMin -= yMax - domain.yMax
+    yMax = domain.yMax
+  }
+
+  // final clamp if domain smaller than desired window
+  xMin = clamp(xMin, domain.xMin, domain.xMax - minW)
+  xMax = clamp(xMax, domain.xMin + minW, domain.xMax)
+  yMin = clamp(yMin, domain.yMin, domain.yMax - minH)
+  yMax = clamp(yMax, domain.yMin + minH, domain.yMax)
+
+  return { xMin, xMax, yMin, yMax }
+}
+
+function computeViewport(canvasWidth: number, canvasHeight: number, domain: DomainBounds): Viewport {
+  const domainWidth = Math.max(1e-12, domain.xMax - domain.xMin)
+  const domainHeight = Math.max(1e-12, domain.yMax - domain.yMin)
+  const domainAspect = domainWidth / domainHeight
+  const canvasAspect = canvasWidth / Math.max(1e-12, canvasHeight)
+
+  let width = canvasWidth
+  let height = canvasHeight
+  if (canvasAspect > domainAspect) {
+    width = canvasHeight * domainAspect
+  } else {
+    height = canvasWidth / domainAspect
+  }
+
+  return {
+    x: 0.5 * (canvasWidth - width),
+    y: 0.5 * (canvasHeight - height),
+    width,
+    height
+  }
 }
 
 function drawArrow(ctx: CanvasRenderingContext2D, x: number, y: number, dx: number, dy: number) {
