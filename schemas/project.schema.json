@@ -1,0 +1,140 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://electrostatic-sim.local/schemas/project.schema.json",
+  "title": "Electrostatic Project File",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "kind",
+    "version",
+    "savedAt",
+    "scene",
+    "settings"
+  ],
+  "properties": {
+    "kind": {
+      "const": "electrostatic-sim/project"
+    },
+    "version": {
+      "const": 1
+    },
+    "savedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "scene": {
+      "$ref": "./scene.schema.json"
+    },
+    "settings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "grid",
+        "solver",
+        "render",
+        "view",
+        "ui",
+        "exportImage"
+      ],
+      "properties": {
+        "grid": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["nx", "ny"],
+          "properties": {
+            "nx": { "type": "integer", "minimum": 32, "maximum": 1024 },
+            "ny": { "type": "integer", "minimum": 32, "maximum": 1024 }
+          }
+        },
+        "solver": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["maxIters", "tolerance", "omega", "chargeSigmaCells"],
+          "properties": {
+            "maxIters": { "type": "integer", "minimum": 1, "maximum": 50000 },
+            "tolerance": { "type": "number", "exclusiveMinimum": 0 },
+            "omega": { "type": "number", "minimum": 0.1, "maximum": 1.99 },
+            "chargeSigmaCells": { "type": "number", "minimum": 0.25, "maximum": 6 }
+          }
+        },
+        "render": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "showField",
+            "fieldStride",
+            "equipCount",
+            "scaleMode",
+            "clipPercentile",
+            "showLegend",
+            "showShading",
+            "shadingStrength",
+            "debugAxes"
+          ],
+          "properties": {
+            "showField": { "type": "boolean" },
+            "fieldStride": { "type": "integer", "minimum": 2, "maximum": 64 },
+            "equipCount": { "type": "integer", "minimum": 0, "maximum": 24 },
+            "scaleMode": { "enum": ["linear", "symmetric", "log"] },
+            "clipPercentile": { "type": "number", "minimum": 0, "maximum": 20 },
+            "showLegend": { "type": "boolean" },
+            "showShading": { "type": "boolean" },
+            "shadingStrength": { "type": "number", "minimum": 0, "maximum": 1 },
+            "debugAxes": { "type": "boolean" }
+          }
+        },
+        "view": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["centerX", "centerY", "zoom"],
+          "properties": {
+            "centerX": { "type": "number" },
+            "centerY": { "type": "number" },
+            "zoom": { "type": "number", "minimum": 1, "maximum": 250 }
+          }
+        },
+        "ui": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["mode", "selectedChargeIndex", "selectedConductorIndex"],
+          "properties": {
+            "mode": { "enum": ["move", "probe"] },
+            "selectedChargeIndex": { "type": "integer", "minimum": 0 },
+            "selectedConductorIndex": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "exportImage": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["width", "height"],
+          "properties": {
+            "width": { "type": "integer", "minimum": 128, "maximum": 8192 },
+            "height": { "type": "integer", "minimum": 128, "maximum": 8192 }
+          }
+        }
+      }
+    },
+    "solution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "nx",
+        "ny",
+        "phiMin",
+        "phiMax",
+        "iterations",
+        "residual",
+        "phiHash"
+      ],
+      "properties": {
+        "nx": { "type": "integer", "minimum": 32, "maximum": 1024 },
+        "ny": { "type": "integer", "minimum": 32, "maximum": 1024 },
+        "phiMin": { "type": "number" },
+        "phiMax": { "type": "number" },
+        "iterations": { "type": "integer", "minimum": 0 },
+        "residual": { "type": "number" },
+        "phiHash": { "type": "string", "pattern": "^[0-9a-fA-F]{8}$" }
+      }
+    }
+  }
+}

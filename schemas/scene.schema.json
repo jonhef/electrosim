@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://electrostatic-sim.local/schemas/scene.schema.json",
+  "title": "Electrostatic Scene",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "domain",
+    "charges",
+    "conductors"
+  ],
+  "properties": {
+    "domain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "xMin",
+        "xMax",
+        "yMin",
+        "yMax",
+        "epsilon"
+      ],
+      "properties": {
+        "xMin": { "type": "number" },
+        "xMax": { "type": "number" },
+        "yMin": { "type": "number" },
+        "yMax": { "type": "number" },
+        "epsilon": { "type": "number", "exclusiveMinimum": 0 }
+      },
+      "description": "Runtime validation also enforces xMax>xMin and yMax>yMin."
+    },
+    "charges": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["x", "y", "q"],
+        "properties": {
+          "x": { "type": "number" },
+          "y": { "type": "number" },
+          "q": { "type": "number" }
+        }
+      }
+    },
+    "conductors": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "potential",
+              "xMin",
+              "xMax",
+              "yMin",
+              "yMax"
+            ],
+            "properties": {
+              "kind": { "const": "rectangle" },
+              "potential": { "type": "number" },
+              "xMin": { "type": "number" },
+              "xMax": { "type": "number" },
+              "yMin": { "type": "number" },
+              "yMax": { "type": "number" }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "potential",
+              "x",
+              "y",
+              "radius"
+            ],
+            "properties": {
+              "kind": { "const": "circle" },
+              "potential": { "type": "number" },
+              "x": { "type": "number" },
+              "y": { "type": "number" },
+              "radius": { "type": "number", "exclusiveMinimum": 0 }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

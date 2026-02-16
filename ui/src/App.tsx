@@ -2,6 +2,15 @@ import React, { useCallback, useEffect, useRef, useState } from "react"
 import type { Conductor, PointCharge, Scene, SolveMeta, PhiField, Probe } from "./types"
 import { solve, fetchPhi } from "./api"
 import {
+  PROJECT_FILE_KIND,
+  PROJECT_FILE_VERSION,
+  PROJECT_LIMITS,
+  hashPhiArray,
+  parseProjectFile,
+  type ProjectFile,
+  type ProjectSolutionSnapshot
+} from "./projectFile"
+import {
   getDomainViewport,
   renderFieldToCanvas,
   screenToWorld,
@@ -35,8 +44,8 @@ type DragState = {
 const MAX_ZOOM = 250
 const CHARGE_HIT_RADIUS_CSS_PX = 14
 const CONDUCTOR_HANDLE_HIT_RADIUS_CSS_PX = 12
-const MIN_EXPORT_RES = 128
-const MAX_EXPORT_RES = 8192
+const MIN_EXPORT_RES = PROJECT_LIMITS.exportResolution.min
+const MAX_EXPORT_RES = PROJECT_LIMITS.exportResolution.max
 
 function clamp(x: number, lo: number, hi: number) {
   return x < lo ? lo : x > hi ? hi : x
@@ -96,8 +105,18 @@ function parseFloatInRange(raw: string, min: number, max: number): number | null
   return v
 }
 
+type SolveParams = {
+  nx: number
+  ny: number
+  maxIters: number
+  tol: number
+  omega: number
+  sigmaCells: number
+}
+
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
+  const projectFileInputRef = useRef<HTMLInputElement | null>(null)
   const dragRef = useRef<DragState>({
     mode: "none",
     chargeIndex: -1,
@@ -299,13 +318,7 @@ export default function App() {
   function validateInputsForSolve():
     | {
       ok: true
-      values: {
-        nx: number
-        ny: number
-        maxIters: number
-        tol: number
-        omega: number
-        sigmaCells: number
+      values: SolveParams & {
         fieldStride: number
         equipCount: number
         clipPercentile: number
@@ -313,32 +326,51 @@ export default function App() {
       }
     }
     | { ok: false; message: string } {
-    const nxV = parseIntInRange(nxInput, 32, 1024)
-    if (nxV == null) return { ok: false, message: "invalid nx (expected integer 32..1024)" }
+    const nxV = parseIntInRange(nxInput, PROJECT_LIMITS.grid.min, PROJECT_LIMITS.grid.max)
+    if (nxV == null) return { ok: false, message: `invalid nx (expected integer ${PROJECT_LIMITS.grid.min}..${PROJECT_LIMITS.grid.max})` }
 
-    const nyV = parseIntInRange(nyInput, 32, 1024)
-    if (nyV == null) return { ok: false, message: "invalid ny (expected integer 32..1024)" }
+    const nyV = parseIntInRange(nyInput, PROJECT_LIMITS.grid.min, PROJECT_LIMITS.grid.max)
+    if (nyV == null) return { ok: false, message: `invalid ny (expected integer ${PROJECT_LIMITS.grid.min}..${PROJECT_LIMITS.grid.max})` }
 
-    const maxItersV = parseIntInRange(maxItersInput, 1, 50000)
-    if (maxItersV == null) return { ok: false, message: "invalid max iters (expected integer 1..50000)" }
+    const maxItersV = parseIntInRange(maxItersInput, PROJECT_LIMITS.maxIters.min, PROJECT_LIMITS.maxIters.max)
+    if (maxItersV == null) return { ok: false, message: `invalid max iters (expected integer ${PROJECT_LIMITS.maxIters.min}..${PROJECT_LIMITS.maxIters.max})` }
 
     const tolV = parseFinite(tolInput)
     if (tolV == null || tolV <= 0) return { ok: false, message: "invalid tolerance (expected positive number)" }
 
-    const omegaV = parseFloatInRange(omegaInput, 0.1, 1.99)
-    if (omegaV == null) return { ok: false, message: "invalid omega (expected number 0.1..1.99)" }
+    const omegaV = parseFloatInRange(omegaInput, PROJECT_LIMITS.omega.min, PROJECT_LIMITS.omega.max)
+    if (omegaV == null) return { ok: false, message: `invalid omega (expected number ${PROJECT_LIMITS.omega.min}..${PROJECT_LIMITS.omega.max})` }
 
-    const sigmaV = parseFloatInRange(sigmaCellsInput, 0.25, 6)
-    if (sigmaV == null) return { ok: false, message: "invalid charge sigma (expected number 0.25..6)" }
+    const sigmaV = parseFloatInRange(sigmaCellsInput, PROJECT_LIMITS.sigmaCells.min, PROJECT_LIMITS.sigmaCells.max)
+    if (sigmaV == null) return { ok: false, message: `invalid charge sigma (expected number ${PROJECT_LIMITS.sigmaCells.min}..${PROJECT_LIMITS.sigmaCells.max})` }
 
-    const strideV = parseIntInRange(fieldStrideInput, 2, 64)
-    if (strideV == null) return { ok: false, message: "invalid arrow stride (expected integer 2..64)" }
+    const strideV = parseIntInRange(fieldStrideInput, PROJECT_LIMITS.fieldStride.min, PROJECT_LIMITS.fieldStride.max)
+    if (strideV == null) {
+      return {
+        ok: false,
+        message: `invalid arrow stride (expected integer ${PROJECT_LIMITS.fieldStride.min}..${PROJECT_LIMITS.fieldStride.max})`
+      }
+    }
 
-    const equipV = parseIntInRange(equipCountInput, 0, 24)
-    if (equipV == null) return { ok: false, message: "invalid equipotential count (expected integer 0..24)" }
+    const equipV = parseIntInRange(equipCountInput, PROJECT_LIMITS.equipCount.min, PROJECT_LIMITS.equipCount.max)
+    if (equipV == null) {
+      return {
+        ok: false,
+        message: `invalid equipotential count (expected integer ${PROJECT_LIMITS.equipCount.min}..${PROJECT_LIMITS.equipCount.max})`
+      }
+    }
 
-    const clipV = parseFloatInRange(clipPercentileInput, 0, 20)
-    if (clipV == null) return { ok: false, message: "invalid percentile clip (expected number 0..20)" }
+    const clipV = parseFloatInRange(
+      clipPercentileInput,
+      PROJECT_LIMITS.clipPercentile.min,
+      PROJECT_LIMITS.clipPercentile.max
+    )
+    if (clipV == null) {
+      return {
+        ok: false,
+        message: `invalid percentile clip (expected number ${PROJECT_LIMITS.clipPercentile.min}..${PROJECT_LIMITS.clipPercentile.max})`
+      }
+    }
 
     for (let i = 0; i < scene.conductors.length; i++) {
       const c = scene.conductors[i]
@@ -384,6 +416,30 @@ export default function App() {
     }
   }
 
+  async function solveSceneAndStore(sceneForSolve: Scene, params: SolveParams): Promise<PhiField> {
+    setStatus("solving")
+    setProbe(null)
+
+    const m = await solve(
+      sceneForSolve,
+      { nx: params.nx, ny: params.ny },
+      {
+        maxIters: params.maxIters,
+        tolerance: params.tol,
+        omega: params.omega,
+        chargeSigmaCells: params.sigmaCells
+      }
+    )
+    setMeta(m)
+
+    const buf = await fetchPhi(m.resultId)
+    const phi = new Float32Array(buf)
+    const field: PhiField = { ...m, phi }
+    setPhiField(field)
+    renderCurrent(field)
+    return field
+  }
+
   async function runSolve() {
     const valid = validateInputsForSolve()
     if (!valid.ok) {
@@ -405,9 +461,6 @@ export default function App() {
     setClipPercentile(v.clipPercentile)
 
     try {
-      setStatus("solving")
-      setProbe(null)
-
       const sceneForSolve: Scene = selectedCharge && v.selectedQ != null
         ? {
             ...scene,
@@ -419,20 +472,8 @@ export default function App() {
         setScene(sceneForSolve)
       }
 
-      const m = await solve(
-        sceneForSolve,
-        { nx: v.nx, ny: v.ny },
-        { maxIters: v.maxIters, tolerance: v.tol, omega: v.omega, chargeSigmaCells: v.sigmaCells }
-      )
-      setMeta(m)
-
-      const buf = await fetchPhi(m.resultId)
-      const phi = new Float32Array(buf)
-      const field: PhiField = { ...m, phi }
-
-      setPhiField(field)
-      setStatus(`done (iters=${m.iterations}, residual=${m.residual.toExponential(2)})`)
-      renderCurrent(field)
+      const field = await solveSceneAndStore(sceneForSolve, v)
+      setStatus(`done (iters=${field.iterations}, residual=${field.residual.toExponential(2)})`)
     } catch (e: any) {
       setStatus(`error: ${e?.message ?? String(e)}`)
     }
@@ -907,6 +948,187 @@ export default function App() {
     })
   }
 
+  function buildProjectSolutionSnapshot(field: PhiField | null): ProjectSolutionSnapshot | undefined {
+    if (!field) return undefined
+    return {
+      nx: field.nx,
+      ny: field.ny,
+      phiMin: field.phiMin,
+      phiMax: field.phiMax,
+      iterations: field.iterations,
+      residual: field.residual,
+      phiHash: hashPhiArray(field.phi)
+    }
+  }
+
+  function buildProjectFilePayload(): ProjectFile {
+    const selectedChargeIndex = clamp(selected, 0, Math.max(0, scene.charges.length - 1))
+    const selectedConductorIndex = clamp(selectedConductor, 0, Math.max(0, scene.conductors.length - 1))
+
+    const project: ProjectFile = {
+      kind: PROJECT_FILE_KIND,
+      version: PROJECT_FILE_VERSION,
+      savedAt: new Date().toISOString(),
+      scene,
+      settings: {
+        grid: { nx, ny },
+        solver: {
+          maxIters,
+          tolerance: tol,
+          omega,
+          chargeSigmaCells: sigmaCells
+        },
+        render: {
+          showField,
+          fieldStride,
+          equipCount,
+          scaleMode,
+          clipPercentile,
+          showLegend,
+          showShading,
+          shadingStrength,
+          debugAxes
+        },
+        view: viewState,
+        ui: {
+          mode,
+          selectedChargeIndex,
+          selectedConductorIndex
+        },
+        exportImage: {
+          width: parseIntInRange(exportWidthInput, MIN_EXPORT_RES, MAX_EXPORT_RES) ?? 1920,
+          height: parseIntInRange(exportHeightInput, MIN_EXPORT_RES, MAX_EXPORT_RES) ?? 1080
+        }
+      }
+    }
+
+    const solution = buildProjectSolutionSnapshot(phiField)
+    if (solution) project.solution = solution
+    return project
+  }
+
+  function saveProjectToDisk() {
+    const project = buildProjectFilePayload()
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-")
+    const filename = `electro-project-${stamp}.json`
+    const blob = new Blob([JSON.stringify(project, null, 2)], { type: "application/json" })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement("a")
+    a.href = url
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    window.setTimeout(() => URL.revokeObjectURL(url), 0)
+    setStatus(`saved ${filename}`)
+  }
+
+  function openProjectFilePicker() {
+    projectFileInputRef.current?.click()
+  }
+
+  function applyLoadedProject(project: ProjectFile) {
+    const loadedScene = project.scene
+    const settings = project.settings
+    const selectedChargeIndex = clamp(settings.ui.selectedChargeIndex, 0, Math.max(0, loadedScene.charges.length - 1))
+    const selectedConductorIndex = clamp(
+      settings.ui.selectedConductorIndex,
+      0,
+      Math.max(0, loadedScene.conductors.length - 1)
+    )
+
+    setScene(loadedScene)
+    setSelected(selectedChargeIndex)
+    setSelectedConductor(selectedConductorIndex)
+    setMode(settings.ui.mode)
+
+    setNx(settings.grid.nx)
+    setNy(settings.grid.ny)
+    setMaxIters(settings.solver.maxIters)
+    setTol(settings.solver.tolerance)
+    setOmega(settings.solver.omega)
+    setSigmaCells(settings.solver.chargeSigmaCells)
+
+    setNxInput(String(settings.grid.nx))
+    setNyInput(String(settings.grid.ny))
+    setMaxItersInput(String(settings.solver.maxIters))
+    setTolInput(String(settings.solver.tolerance))
+    setOmegaInput(String(settings.solver.omega))
+    setSigmaCellsInput(String(settings.solver.chargeSigmaCells))
+
+    setShowField(settings.render.showField)
+    setFieldStride(settings.render.fieldStride)
+    setFieldStrideInput(String(settings.render.fieldStride))
+    setEquipCount(settings.render.equipCount)
+    setEquipCountInput(String(settings.render.equipCount))
+    setScaleMode(settings.render.scaleMode)
+    setClipPercentile(settings.render.clipPercentile)
+    setClipPercentileInput(String(settings.render.clipPercentile))
+    setShowLegend(settings.render.showLegend)
+    setShowShading(settings.render.showShading)
+    setShadingStrength(settings.render.shadingStrength)
+    setDebugAxes(settings.render.debugAxes)
+
+    setViewState(clampView(settings.view, loadedScene.domain))
+    setSelectedQInput(loadedScene.charges[selectedChargeIndex]?.q == null ? "" : String(loadedScene.charges[selectedChargeIndex].q))
+    setExportWidthInput(String(settings.exportImage.width))
+    setExportHeightInput(String(settings.exportImage.height))
+
+    setProbe(null)
+    setPhiField(null)
+    setMeta(null)
+    setInputError(null)
+  }
+
+  function isSameSolution(saved: ProjectSolutionSnapshot, field: PhiField): boolean {
+    if (saved.nx !== field.nx || saved.ny !== field.ny) return false
+    if (saved.iterations !== field.iterations) return false
+    return saved.phiHash.toLowerCase() === hashPhiArray(field.phi)
+  }
+
+  async function onProjectFileChange(ev: React.ChangeEvent<HTMLInputElement>) {
+    const input = ev.currentTarget
+    const file = input.files?.[0]
+    input.value = ""
+    if (!file) return
+
+    try {
+      const text = await file.text()
+      const parsedRaw = JSON.parse(text)
+      const parsed = parseProjectFile(parsedRaw)
+      if (!parsed.ok) {
+        setStatus(`load error: ${parsed.error}`)
+        return
+      }
+
+      const project = parsed.value
+      applyLoadedProject(project)
+      setStatus(`loaded ${file.name}; solving`)
+
+      const field = await solveSceneAndStore(project.scene, {
+        nx: project.settings.grid.nx,
+        ny: project.settings.grid.ny,
+        maxIters: project.settings.solver.maxIters,
+        tol: project.settings.solver.tolerance,
+        omega: project.settings.solver.omega,
+        sigmaCells: project.settings.solver.chargeSigmaCells
+      })
+
+      if (project.solution) {
+        const same = isSameSolution(project.solution, field)
+        setStatus(
+          same
+            ? `loaded ${file.name}; solution reproduced identically`
+            : `loaded ${file.name}; solved but differs from saved solution snapshot`
+        )
+      } else {
+        setStatus(`loaded ${file.name}; solved`)
+      }
+    } catch (e: any) {
+      setStatus(`load error: ${e?.message ?? String(e)}`)
+    }
+  }
+
   function useViewportResolutionForExport() {
     const c = canvasRef.current
     if (!c) return
@@ -978,6 +1200,13 @@ export default function App() {
   return (
     <div style={{ display: "flex", gap: 16, padding: 16, fontFamily: "system-ui, -apple-system, sans-serif" }}>
       <div style={{ width: 340 }}>
+        <input
+          ref={projectFileInputRef}
+          type="file"
+          accept=".json,application/json"
+          onChange={onProjectFileChange}
+          style={{ display: "none" }}
+        />
         <div style={{ fontSize: 20, fontWeight: 700, marginBottom: 8 }}>electro mvp</div>
 
         <div style={{ marginBottom: 10, color: "#444" }}>
@@ -986,6 +1215,8 @@ export default function App() {
 
         <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
           <button onClick={runSolve} disabled={status === "solving"} style={{ padding: "8px 12px" }}>solve</button>
+          <button onClick={saveProjectToDisk}>save project</button>
+          <button onClick={openProjectFilePicker}>load project</button>
           <button onClick={() => addCharge(+1)}>+ charge</button>
           <button onClick={() => addCharge(-1)}>- charge</button>
           <button onClick={removeSelected} disabled={scene.charges.length === 0}>del</button>

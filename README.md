@@ -49,6 +49,13 @@ docker compose down
 
 Rebuild UI/engine images after code changes with `docker compose build` (or `docker compose up --build`). No local Node.js or .NET install is required. The UI talks to the engine via `ENGINE_URL` (from the browser perspective), so set it to a browser-reachable address if you change ports or host.
 
+## Project Save/Load Format
+- UI supports saving/loading a full project JSON (scene + solver/grid/render/view/UI settings).
+- Schema files:
+  - `schemas/scene.schema.json`
+  - `schemas/project.schema.json`
+- Saved files can include a solution snapshot hash; on load, the UI re-solves and reports whether the solution was reproduced identically.
+
 ## Docker Hub EOF during build (BuildKit)
 If you see an error like:
 `failed to fetch anonymous token ... https://auth.docker.io/token ... EOF`
