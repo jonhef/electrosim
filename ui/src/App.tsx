@@ -35,6 +35,8 @@ type DragState = {
 const MAX_ZOOM = 250
 const CHARGE_HIT_RADIUS_CSS_PX = 14
 const CONDUCTOR_HANDLE_HIT_RADIUS_CSS_PX = 12
+const MIN_EXPORT_RES = 128
+const MAX_EXPORT_RES = 8192
 
 function clamp(x: number, lo: number, hi: number) {
   return x < lo ? lo : x > hi ? hi : x
@@ -146,6 +148,8 @@ export default function App() {
   const [showShading, setShowShading] = useState(false)
   const [shadingStrength, setShadingStrength] = useState(0.35)
   const [debugAxes, setDebugAxes] = useState(false)
+  const [exportWidthInput, setExportWidthInput] = useState("1920")
+  const [exportHeightInput, setExportHeightInput] = useState("1080")
 
   const [viewState, setViewState] = useState<ViewState>(() => makeDefaultView(defaultScene.domain))
   const [selectedQInput, setSelectedQInput] = useState(defaultScene.charges[0]?.q.toString() ?? "")
@@ -903,6 +907,74 @@ export default function App() {
     })
   }
 
+  function useViewportResolutionForExport() {
+    const c = canvasRef.current
+    if (!c) return
+    setExportWidthInput(String(Math.max(1, Math.round(c.width))))
+    setExportHeightInput(String(Math.max(1, Math.round(c.height))))
+  }
+
+  async function exportPng() {
+    if (!phiField) {
+      setStatus("export: run solve first")
+      return
+    }
+
+    const exportWidth = parseIntInRange(exportWidthInput, MIN_EXPORT_RES, MAX_EXPORT_RES)
+    if (exportWidth == null) {
+      setStatus(`export: invalid width (expected integer ${MIN_EXPORT_RES}..${MAX_EXPORT_RES})`)
+      return
+    }
+
+    const exportHeight = parseIntInRange(exportHeightInput, MIN_EXPORT_RES, MAX_EXPORT_RES)
+    if (exportHeight == null) {
+      setStatus(`export: invalid height (expected integer ${MIN_EXPORT_RES}..${MAX_EXPORT_RES})`)
+      return
+    }
+
+    const bounds = viewBoundsFrom(viewState, phiField)
+    const exportCanvas = document.createElement("canvas")
+    exportCanvas.width = exportWidth
+    exportCanvas.height = exportHeight
+
+    renderFieldToCanvas(exportCanvas, phiField, {
+      showField,
+      fieldStride,
+      showEquip: equipCount > 0,
+      equipCount: Math.max(0, equipCount),
+      scaleMode,
+      clipPercentile,
+      showLegend: true,
+      units: "arb.",
+      showShading,
+      shadingStrength,
+      debugAxes,
+      viewBounds: bounds,
+      probe,
+      charges: scene.charges,
+      conductors: scene.conductors,
+      selectedConductorIndex: selectedConductor
+    })
+
+    const blob = await new Promise<Blob | null>(resolve => exportCanvas.toBlob(resolve, "image/png"))
+    if (!blob) {
+      setStatus("export: failed to encode png")
+      return
+    }
+
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-")
+    const filename = `electrostatic-${exportWidth}x${exportHeight}-${stamp}.png`
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement("a")
+    a.href = url
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    window.setTimeout(() => URL.revokeObjectURL(url), 0)
+    setStatus(`exported ${filename}`)
+  }
+
   return (
     <div style={{ display: "flex", gap: 16, padding: 16, fontFamily: "system-ui, -apple-system, sans-serif" }}>
       <div style={{ width: 340 }}>
@@ -1304,6 +1376,40 @@ export default function App() {
           </label>
           <div style={{ marginTop: 6, fontSize: 12, color: "#555" }}>
             zoom {viewState.zoom.toFixed(2)}x
+          </div>
+          <div style={{ marginTop: 10, paddingTop: 8, borderTop: "1px solid #ddd" }}>
+            <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 6 }}>png export</div>
+            <label style={{ display: "block", fontSize: 12 }}>
+              width (px)
+              <input
+                type="text"
+                inputMode="numeric"
+                value={exportWidthInput}
+                onChange={e => setExportWidthInput(e.target.value)}
+                style={{ width: "100%" }}
+              />
+            </label>
+            <label style={{ display: "block", fontSize: 12, marginTop: 6 }}>
+              height (px)
+              <input
+                type="text"
+                inputMode="numeric"
+                value={exportHeightInput}
+                onChange={e => setExportHeightInput(e.target.value)}
+                style={{ width: "100%" }}
+              />
+            </label>
+            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+              <button onClick={useViewportResolutionForExport} style={{ flex: 1 }}>
+                use viewport
+              </button>
+              <button onClick={exportPng} disabled={!phiField} style={{ flex: 1 }}>
+                export png
+              </button>
+            </div>
+            <div style={{ marginTop: 6, fontSize: 12, color: "#555" }}>
+              export always includes legend and numeric scale
+            </div>
           </div>
         </div>
 
