@@ -15,4 +15,4 @@ services:
     depends_on:
       - engine
     ports:
-      - "${UI_PORT:-8080}:80"
+      - "${UI_PORT:-8081}:80"

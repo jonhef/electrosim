@@ -31,7 +31,7 @@ Prereq: Docker + docker-compose.
 1) Copy `.env.example` to `.env` and adjust if needed:
 ```
 ENGINE_PORT=5000      # host port for the engine (container listens on 5000)
-UI_PORT=8080          # host port for the UI (container listens on 80)
+UI_PORT=8081          # host port for the UI (container listens on 80)
 ENGINE_URL=http://localhost:5000  # build-time URL embedded into the UI; must be reachable from your browser
 ```
 2) Build and start both services:
@@ -48,3 +48,13 @@ docker compose down
 ```
 
 Rebuild UI/engine images after code changes with `docker compose build` (or `docker compose up --build`). No local Node.js or .NET install is required. The UI talks to the engine via `ENGINE_URL` (from the browser perspective), so set it to a browser-reachable address if you change ports or host.
+
+## Docker Hub EOF during build (BuildKit)
+If you see an error like:
+`failed to fetch anonymous token ... https://auth.docker.io/token ... EOF`
+
+run compose with BuildKit disabled:
+```
+DOCKER_BUILDKIT=0 docker compose up --build
+```
+This project has been verified to build successfully with that setting.
